@@ -12,7 +12,12 @@ Parameters:
     Type: String
     Default: 10.0.0.0/16
 
-  PublicSubnetCIDR:
+  PublicSubnet1CIDR:
+    Description: Please enter the IP range (CDIR notation) for this network
+    Type: String
+    Default: 10.0.0.0/24
+
+  PublicSubnet2CIDR:
     Description: Please enter the IP range (CDIR notation) for this network
     Type: String
     Default: 10.0.0.0/24
@@ -26,11 +31,17 @@ Parameters:
       Description: Please enter the IP range (CDIR notation) for this network
       Type: String
       Default: 10.0.0.0/24
-
+  
+  AMItoUse:
+    Description: AMI to use for our base image
+    Type: String
 
 
 Resources:
 
+  ############################################################
+  # Udagram VPC: create a logically isolated virtual network for udagram
+  ############################################################
   VPC:
       Type: AWS::EC2::VPC
       Properties:
@@ -40,6 +51,11 @@ Resources:
               - Key: Name
                 Value: !Ref EnvironmentName
   
+
+  ############################################################
+  # Udagram InternetGateway: provides a target in udagram VPC route tables  
+  # for internet-routbale traffic, and to perform network address transalation
+  ############################################################
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
@@ -54,16 +70,31 @@ Resources:
         VpcId: !Ref VPC
   
   
-  PublicSubnet:
+  ############################################################
+  # Udagram Subnets: Logical subdivision of udagram IP network. Public subnet
+  # for internet access and Private subnets hidden from the internet.
+  ############################################################
+  PublicSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
         VpcId: !Ref VPC
         AvailabilityZone: !Select [ 0, !GetAZs '']
-        CidrBlock: !Ref PublicSubnetCIDR
+        CidrBlock: !Ref PublicSubnet1CIDR
         MapPublicIpOnLaunch: true
         Tags:
             - Key: Name
               Value: !Sub ${EnvironmentName} Public Subnet (AZ1)
+  
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+        VpcId: !Ref VPC
+        AvailabilityZone: !Select [ 1, !GetAZs '']
+        CidrBlock: !Ref PublicSubnet2CIDR
+        MapPublicIpOnLaunch: true
+        Tags:
+            - Key: Name
+              Value: !Sub ${EnvironmentName} Public Subnet (AZ2)
   
   PrivateSubnet1:
     Type: AWS::EC2::Subnet
@@ -77,16 +108,123 @@ Resources:
               Value: !Sub ${EnvironmentName} Private Subnet (AZ1)
 
   PrivateSubnet2:
-      Type: AWS::EC2::Subnet
-      Properties:
-          VpcId: !Ref VPC
-          AvailabilityZone: !Select [ 1, !GetAZs '']
-          CidrBlock: !Ref PrivateSubnet2CIDR
-          MapPublicIpOnLaunch: false
-          Tags:
-              - Key: Name
-                Value: !Sub ${EnvironmentName} Private Subnet (AZ2)
+    Type: AWS::EC2::Subnet
+    Properties:
+        VpcId: !Ref VPC
+        AvailabilityZone: !Select [ 1, !GetAZs '']
+        CidrBlock: !Ref PrivateSubnet2CIDR
+        MapPublicIpOnLaunch: false
+        Tags:
+            - Key: Name
+              Value: !Sub ${EnvironmentName} Private Subnet (AZ2)
+
   
+  ############################################################
+  # Udagram NAT Gatway: Provides network address translation to allow 
+  # private subnet connect to services outside udagram VPC
+  ############################################################
+  NatGateway1EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties: 
+        Domain: vpc
+
+  NatGateway2EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+        Domain: vpc
+
+  NatGateway1: 
+    Type: AWS::EC2::NatGateway
+    Properties: 
+        AllocationId: !GetAtt NatGateway1EIP.AllocationId
+        SubnetId: !Ref PublicSubnet1
+
+  NatGateway2: 
+    Type: AWS::EC2::NatGateway
+    Properties:
+        AllocationId: !GetAtt NatGateway2EIP.AllocationId
+        SubnetId: !Ref PublicSubnet2
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties: 
+        VpcId: !Ref VPC
+        Tags: 
+            - Key: Name 
+              Value: !Sub ${EnvironmentName} Public Routes
+
+  DefaultPublicRoute: 
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties: 
+        RouteTableId: !Ref PublicRouteTable
+        DestinationCidrBlock: 0.0.0.0/0
+        GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+        RouteTableId: !Ref PublicRouteTable
+        SubnetId: !Ref PublicSubnet1
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+        RouteTableId: !Ref PublicRouteTable
+        SubnetId: !Ref PublicSubnet2
+
+
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties: 
+        VpcId: !Ref VPC
+        Tags: 
+            - Key: Name 
+              Value: !Sub ${EnvironmentName} Private Routes (AZ1)
+
+  DefaultPrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+        RouteTableId: !Ref PrivateRouteTable1
+        DestinationCidrBlock: 0.0.0.0/0
+        NatGatewayId: !Ref NatGateway1
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+        RouteTableId: !Ref PrivateRouteTable1
+        SubnetId: !Ref PrivateSubnet1
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties: 
+        VpcId: !Ref VPC
+        Tags: 
+            - Key: Name 
+              Value: !Sub ${EnvironmentName} Private Routes (AZ2)
+
+  DefaultPrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+        RouteTableId: !Ref PrivateRouteTable2
+        DestinationCidrBlock: 0.0.0.0/0
+        NatGatewayId: !Ref NatGateway2
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+        RouteTableId: !Ref PrivateRouteTable2
+        SubnetId: !Ref PrivateSubnet2
+
+
+
+
+  ############################################################
+  # Udagram Security Groups: Virtual firewalls for udagram instance 
+  # and load balancer to control inbound and outbound traffic
+  ############################################################
   LBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -110,8 +248,8 @@ Resources:
       VpcId: !Ref VPC
       SecurityGroupIngress:
       - IpProtocol: tcp
-        FromPort: 8080
-        ToPort: 8080
+        FromPort: 80
+        ToPort: 80
         CidrIp: 0.0.0.0/0
       - IpProtocol: tcp
         FromPort: 22
@@ -122,3 +260,154 @@ Resources:
         FromPort: 0
         ToPort: 65535
         CidrIp: 0.0.0.0/0
+  
+  ############################################################
+  # Webserver role to grant access to our ec2 instances to be able to read from s3
+  # Instance profile with WebServerRoleForS3Access role to associate with our auto scaling EC2 servers
+  ############################################################
+  WebServerRoleForS3Access: 
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+
+  WebServerInstanceProfile: 
+    Type: "AWS::IAM::InstanceProfile"
+    Properties: 
+      Roles: 
+        - !Ref WebServerRoleForS3Access
+  
+  
+  ############################################################
+  # Udagram Auto Scaling: A scaling plan that automate how udagram instances
+  # respond to changes in demand. Optimize availability with LaunchConfiguration
+  ############################################################
+  WebServerLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          sudo apt-get update -y
+          sudo apt-get install unzip awscli -y
+          sudo apt-get install apache2 -y
+          sudo systemctl start apache2.service
+          cd /var/www/html
+          aws s3 cp s3://udacity-demo-1/udacity.zip .
+          unzip -o udacity.zip        
+      ImageId: !Ref AMItoUse
+      SecurityGroups:
+      - Ref: WebServerSecurityGroup
+      InstanceType: t3.medium
+      IamInstanceProfile: !Ref WebServerInstanceProfile
+      BlockDeviceMappings:
+      - DeviceName: "/dev/sdk"
+        Ebs:
+          VolumeSize: '20'
+
+  WebServerAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+      - !Ref PrivateSubnet1
+      - !Ref PrivateSubnet2
+      LaunchConfigurationName:
+        Ref: WebServerLaunchConfig
+      MinSize: '4'
+      MaxSize: '16'
+      TargetGroupARNs:
+      - Ref: WebServerTargetGroup
+
+  
+  ############################################################
+  # Udagram Load Balancer: Distribute incoming traffic accross udagram instances.
+  # This increase the availability of udagram application
+  ############################################################
+  WebServerLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+      - !Ref PublicSubnet1
+      - !Ref PublicSubnet2
+      SecurityGroups:
+      - Ref: LBSecurityGroup
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: WebServerTargetGroup
+      LoadBalancerArn:
+        Ref: WebServerLoadBalancer
+      Port: '80'
+      Protocol: HTTP
+
+  ALBListenerRule:
+      Type: AWS::ElasticLoadBalancingV2::ListenerRule
+      Properties:
+        Actions:
+        - Type: forward
+          TargetGroupArn: !Ref 'WebServerTargetGroup'
+        Conditions:
+        - Field: path-pattern
+          Values: [/]
+        ListenerArn: !Ref 'Listener'
+        Priority: 1
+
+  WebServerTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 8
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId: !Ref VPC
+
+
+
+Outputs: 
+
+    VPC: 
+        Description: A reference to udagram VPC
+        Value: !Ref VPC
+        Export:
+          Name: !Sub ${EnvironmentName}-VPCID
+
+    PrivateSubnets:
+        Description: A list of the private subnets
+        Value: !Join [ ",", [ !Ref PrivateSubnet1, !Ref PrivateSubnet2 ]]
+        Export:
+          Name: !Sub ${EnvironmentName}-PRIV-NETS
+
+    PrivateSubnet1:
+        Description: A reference to the private subnet in the 1st Availability Zone
+        Value: !Ref PrivateSubnet1
+        Export:
+          Name: !Sub ${EnvironmentName}-PRI1-SN
+
+    PrivateSubnet2: 
+        Description: A reference to the private subnet in the 2nd Availability Zone
+        Value: !Ref PrivateSubnet2
+        Export:
+          Name: !Sub ${EnvironmentName}-PRI2-SN
+    
+    LoadBalancerDNSName:
+        Description: The public url to udagram application
+        Value: !Join [ "", [ "http://", !GetAtt WebServerLoadBalancer.DNSName ]]
+        Export:
+          Name: !Sub ${EnvironmentName}-PUB-URL
